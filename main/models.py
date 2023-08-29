@@ -18,6 +18,23 @@ class PIRCS(models.Model):
                 + self.int + ", mod: " + str(self.mod) + ", val: " + str(self.val))
 
 
+class Condition(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=50)
+
+    def __str__(self) -> str:
+        return self.name
+    
+    
+class Severity(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=20)
+    level = models.IntegerField()
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class Person(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=50)

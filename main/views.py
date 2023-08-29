@@ -2,7 +2,7 @@ from django.http.response import JsonResponse
 from django.shortcuts import render
 from django.http import HttpResponse
 from django.core.serializers import serialize
-from .models import PIRCS, Person
+from .models import PIRCS, Person, Condition, Severity
 from .forms import PostNewCommand, PersonForm
 from django.views.decorators.csrf import csrf_exempt
 from .lung_sim import Patient, Ventilator
@@ -16,6 +16,7 @@ most_recent_data_return_ms = time.time_ns() / 1000000
 test_frequency_ms = 6000
 sample_rate_ms = 25
 MAX_SAMPLES = 1000
+
 FLOW_RATE_ml_min = 18000
 
 PIP_pressure_cmH2O = 20
@@ -26,6 +27,8 @@ IE = 0.5
 MODE = 'P'
 
 pid = Person.objects.first().id
+cid = Condition.objects.first().id
+sid = Severity.objects.first().id
 
 # This will be redone, but here I create a tiny
 # "settings" state that we can manipulate with the PIRCS
@@ -76,20 +79,49 @@ def set_state_from_PIRCS(p):
 def set_patient_state():
     global patient
     global pid
+    global cid
+    global sid
 
     patient_data = Person.objects.all()
     chosen_patient = patient_data.filter(id=pid)
+
+    #finding the chosen condition inputed by user
+    condition_data = Condition.objects.all()
+    chosen_condition = condition_data.filter(id=cid)[0]
+
+    #finding the chosen severity inputed by user
+    severity_data = Severity.objects.all()
+    chosen_severity = severity_data.filter(id=sid)[0]
 
     # since we filter using unique id, this is guaranteed to be at max 1, so [0] is used
     patient.weight = chosen_patient[0].weight
     patient.height = chosen_patient[0].height
     patient.sex = chosen_patient[0].sex
-    patient.resistance = chosen_patient[0].resistance
-    # compliance = chosen_patient[0].compliance
+
+    #patient resistance and compliance could change depending on condition
+    # patient.resistance = chosen_patient[0].resistance
+    # patient.compliance = chosen_patient[0].compliance
+    patient.resistance = 8
+    patient.compliance = 60
+
+    if chosen_condition.name == "ARDS":  
+        patient.compliance = 40  
+        patient.resistance = 10  
+        for i in range(chosen_severity.level):
+            patient.compliance -= 8
+            patient.resistance += 1
+
+    elif chosen_condition.name == "COPD":
+        patient.compliance = 50
+        patient.resistance = 15
+        for i in range(chosen_severity.level):
+            patient.compliance += 5
+            patient.resistance += 6
 
     print("Patient state is set. Height: " + str(patient.height) + "cm, weight: " + str(patient.weight) +
-          " kg, sex: " + patient.sex + ", resistance: " + str(patient.resistance))
-    #    + ", compliance: " + str(compliance))
+          " kg, sex: " + patient.sex + ", resistance: " + str(patient.resistance)
+       + ", compliance: " + str(patient.compliance) + ", condition: " + chosen_condition.name + ", severity: " +
+       chosen_severity.name)
 
 
 # Global patient and ventilator state
@@ -107,6 +139,8 @@ def data(response, n):
 
     ms = int(time.time_ns() / 1000000)  # we want the time in ms
     patient_status = patient.status()
+
+    # print('starting', patient.status())
 
     # Now I will create a returned set of sine waves for testing
     # These will be "correct" in the since that they are tied to the epoch time.
@@ -126,10 +160,13 @@ def data(response, n):
         ventilator_status = ventilator.advance(
             advance_time=sample_rate_ms, pressure_mouth=patient_status.pressure_mouth)
         patient_status = patient.advance(
-            advance_time=sample_rate_ms, pressure_mouth=ventilator_status.pressure_mouth)
+            advance_time=sample_rate_ms, pressure_mouth=ventilator_status.pressure_mouth, 
+            volume=patient_status.lung_volume, pressure_intrapleural=patient_status.pressure_intrapleural)
 
-        p_mmH2O = patient_status.pressure_mouth*10
-        f = patient_status.flow*10
+        p_mmH2O = patient_status.pressure_mouth*10  #pressure graph
+        f_ml_per_min = patient_status.flow*1000    #flow graph
+
+        print('running', patient_status.flow)
 
         p_pirds = {"event": "M",
                    "type": "D",
@@ -142,7 +179,7 @@ def data(response, n):
                    "loc": "I",
                    "num": 0,
                    'ms': current_sample_ms,
-                   'val': f}
+                   'val': f_ml_per_min} ###changed f to a constant #I wonder if pirds means flow value and multiply that by 1000?
         pirds_samples.append(p_pirds)
         pirds_samples.append(f_pirds)
 
@@ -153,12 +190,15 @@ def data(response, n):
     response["Access-Control-Max-Age"] = "1000"
     response["Access-Control-Allow-Headers"] = "X-Requested-With, Content-Type"
 
+    # print("the flow is ", f/10)
+
     return response
 
 
 @csrf_exempt
 def patient_info(response):
     global pid
+    global cid
 
     data = Person.objects.all()
     # chosen_patient = data.filter(id=pid)
@@ -236,6 +276,8 @@ def control(response):
 @csrf_exempt
 def home(response):
     global pid
+    global cid
+    global sid
 
     if response.method == "POST":
         form = PersonForm(response.POST)
@@ -243,9 +285,20 @@ def home(response):
         if form.is_valid():
             # get the id of the patient
             pid = form.cleaned_data["chosen_patient"]
+            cid = form.cleaned_data["chosen_condition"]
+            sid = form.cleaned_data["chosen_severity"]
             set_patient_state()
 
     else:
         form = PersonForm()
 
     return render(response, "main/home.html", {"form": form})
+
+
+
+# # To load severity levels
+# # Reference: https://github.com/akjasim/cb_dj_dependent_dropdown/tree/master/persons
+# def load_severity(response):
+#     condition_id = response.GET.get('condition')
+#     severities = Severity.objects.filter(condition=condition_id) #filter the severity levels for that conditoin
+#     return render(response, 'templates/dropdown_list.html', {'severities' : severities})
